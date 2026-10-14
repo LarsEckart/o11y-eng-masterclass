@@ -43,8 +43,9 @@ missing:**
   even start, not just the ones below. Flip this before merging anything
   that touches the orb.
 - `BUILDEVENT_APIKEY` (a Honeycomb send-events key) and
-  `BUILDEVENT_CIRCLE_API_TOKEN` (a CircleCI personal API token with read
-  access to this project). On the upstream `honeycombio` org these are
+  `BUILDEVENT_CIRCLE_API_TOKEN` (a CircleCI *personal* API token with read
+  access to this project — a project-scoped token makes CircleCI's
+  workflow API return a 500, which fails `otel_watch`). On the upstream `honeycombio` org these are
   meant to come from the `Honeycomb Secrets for Public Repos` CircleCI
   context already attached to the relevant jobs in the workflow — the same
   org-wide context other public honeycombio repos use for release-time
@@ -176,6 +177,10 @@ supplement, not the primary demo.
 
 5. Set the Claude Code telemetry env vars above in whatever terminal you'll
    actually be typing in during the LLM section.
+
+6. If you'll show `cicd-pipeline-live`, make sure a pipeline has run on
+   `main` with the CircleCI secrets above in place — that dataset only has
+   data after a real run — and confirm the trace is in Honeycomb.
 
 ## Live demo run order
 
