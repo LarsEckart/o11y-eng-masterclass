@@ -1,0 +1,30 @@
+apply plugin: 'application'
+
+application {
+    mainClass = 'io.honeycomb.masterclass.seedarbitraryquestion.SeedArbitraryQuestion'
+}
+
+dependencies {
+    implementation platform("io.opentelemetry:opentelemetry-bom:${otelVersion}")
+    implementation 'io.opentelemetry:opentelemetry-api'
+    implementation 'io.opentelemetry:opentelemetry-sdk'
+    implementation 'io.opentelemetry:opentelemetry-exporter-otlp'
+    implementation "io.opentelemetry.semconv:opentelemetry-semconv:${semconvVersion}"
+
+    testImplementation 'io.opentelemetry:opentelemetry-sdk-testing'
+    // Test only: decodes the protobuf bodies the fake OTLP receiver gets. The Go
+    // test uses the same generated types (go.opentelemetry.io/proto/otlp).
+    testImplementation "io.opentelemetry.proto:opentelemetry-proto:${otelProtoVersion}"
+}
+
+// The delivery test launches the real seeder in a child JVM. It needs the
+// classpath of the main code to do that, and Gradle's test worker does not
+// expose it reliably through java.class.path, so we hand it over explicitly.
+def seederClasspath = sourceSets.main.runtimeClasspath
+
+tasks.named('test') {
+    inputs.files(seederClasspath)
+    doFirst {
+        systemProperty 'seeder.classpath', seederClasspath.asPath
+    }
+}

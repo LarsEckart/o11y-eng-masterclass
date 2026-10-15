@@ -1,0 +1,4 @@
+rootProject.name = 'session-3-business-case-java'
+
+include 'business-case'
+include 'seed-arbitrary-question'
