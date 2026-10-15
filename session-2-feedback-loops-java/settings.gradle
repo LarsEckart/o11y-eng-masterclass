@@ -1,0 +1,4 @@
+rootProject.name = 'session-2-feedback-loops-java'
+
+include 'scenario'
+include 'seed-canary-regression'
