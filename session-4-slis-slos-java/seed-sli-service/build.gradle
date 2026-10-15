@@ -1,0 +1,22 @@
+apply plugin: 'application'
+
+application {
+    mainClass = 'io.honeycomb.masterclass.slisslos.seedsliservice.SeedSliService'
+}
+
+dependencies {
+    implementation project(':scenario')
+
+    implementation platform("io.opentelemetry:opentelemetry-bom:${otelVersion}")
+    implementation 'io.opentelemetry:opentelemetry-api'
+    implementation 'io.opentelemetry:opentelemetry-sdk'
+    implementation 'io.opentelemetry:opentelemetry-sdk-trace'
+    implementation 'io.opentelemetry:opentelemetry-exporter-otlp'
+    implementation "io.opentelemetry.semconv:opentelemetry-semconv:${semconvVersion}"
+
+    testImplementation 'io.opentelemetry:opentelemetry-sdk-testing'
+    // Generated protobuf classes for OTLP. The delivery test uses them to
+    // decode what the exporter sends, like the Go test does with
+    // go.opentelemetry.io/proto/otlp. Test scope only.
+    testImplementation "io.opentelemetry.proto:opentelemetry-proto:${otelProtoVersion}"
+}

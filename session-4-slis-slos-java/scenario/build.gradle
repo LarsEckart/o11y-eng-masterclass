@@ -1,0 +1,3 @@
+// A plain library with no OpenTelemetry dependency. The seeder turns the
+// generated requests into spans; this module only decides what the requests are.
+apply plugin: 'java-library'

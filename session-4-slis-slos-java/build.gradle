@@ -1,0 +1,36 @@
+allprojects {
+    group = 'io.honeycomb.masterclass'
+    version = '1.0.0'
+
+    repositories {
+        mavenCentral()
+    }
+}
+
+subprojects {
+    apply plugin: 'java'
+
+    java {
+        toolchain {
+            languageVersion = JavaLanguageVersion.of(25)
+        }
+    }
+
+    tasks.withType(JavaCompile).configureEach {
+        options.release = 25
+        options.compilerArgs += ['-Xlint:unchecked', '-Werror']
+    }
+
+    tasks.withType(Test).configureEach {
+        useJUnitPlatform()
+    }
+
+    // Unlike session 1, the OpenTelemetry dependencies are NOT declared here.
+    // The scenario library must stay free of OTel (the Go package is
+    // "testable without an OTel SDK"), so only the seeder asks for them.
+    dependencies {
+        testImplementation "org.junit.jupiter:junit-jupiter:${junitVersion}"
+        testImplementation 'org.assertj:assertj-core:3.27.3'
+        testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+    }
+}

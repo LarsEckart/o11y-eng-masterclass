@@ -1,0 +1,6 @@
+rootProject.name = 'session-4-slis-slos-java'
+
+// Library: the scenario generator (Go: internal/scenario).
+include 'scenario'
+// Program: the seeder (Go: cmd/seed-sli-service).
+include 'seed-sli-service'
