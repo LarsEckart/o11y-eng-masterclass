@@ -1,0 +1,3 @@
+rootProject.name = 'session-5-cost-sampling-java'
+
+include 'seed-cost-sampling-service'

@@ -1,0 +1,41 @@
+allprojects {
+    group = 'io.honeycomb.masterclass'
+    version = '1.0.0'
+
+    repositories {
+        mavenCentral()
+    }
+}
+
+subprojects {
+    apply plugin: 'java'
+
+    java {
+        toolchain {
+            languageVersion = JavaLanguageVersion.of(25)
+        }
+    }
+
+    tasks.withType(JavaCompile).configureEach {
+        options.release = 25
+        options.compilerArgs += ['-Xlint:unchecked', '-Werror']
+    }
+
+    tasks.withType(Test).configureEach {
+        useJUnitPlatform()
+    }
+
+    dependencies {
+        implementation platform("io.opentelemetry:opentelemetry-bom:${otelVersion}")
+        implementation 'io.opentelemetry:opentelemetry-api'
+        implementation 'io.opentelemetry:opentelemetry-sdk'
+        implementation 'io.opentelemetry:opentelemetry-sdk-trace'
+        implementation 'io.opentelemetry:opentelemetry-exporter-otlp'
+        implementation "io.opentelemetry.semconv:opentelemetry-semconv:${semconvVersion}"
+
+        testImplementation 'io.opentelemetry:opentelemetry-sdk-testing'
+        testImplementation "org.junit.jupiter:junit-jupiter:${junitVersion}"
+        testImplementation 'org.assertj:assertj-core:3.27.3'
+        testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+    }
+}

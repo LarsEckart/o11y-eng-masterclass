@@ -1,0 +1,6 @@
+.gradle/
+build/
+*.class
+*.jar
+*.log
+!gradle/wrapper/gradle-wrapper.jar

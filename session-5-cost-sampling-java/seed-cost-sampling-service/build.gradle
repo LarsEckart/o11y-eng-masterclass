@@ -1,0 +1,14 @@
+apply plugin: 'application'
+
+application {
+    mainClass = 'io.honeycomb.masterclass.costsampling.SeedCostSamplingService'
+}
+
+dependencies {
+    // Test only. The delivery test runs a fake OTLP receiver and needs the
+    // generated protobuf classes to decode what the exporter sent. The OTel
+    // SDK ships only hand-written encoders, so it has nothing to decode with.
+    // This pulls in protobuf-java too. Go's delivery test imports the same
+    // thing (go.opentelemetry.io/proto/otlp).
+    testImplementation 'io.opentelemetry.proto:opentelemetry-proto:1.11.1-alpha'
+}
