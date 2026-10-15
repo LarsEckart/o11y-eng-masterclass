@@ -1,0 +1,10 @@
+// This module contains several small standalone demos. None is declared as
+// the single application entrypoint; run each main class directly with
+//   ./gradlew :instrumentation-traps:run -PmainClass=< qualified class name >
+// or from your IDE.
+
+tasks.register('run', JavaExec) {
+    dependsOn classes
+    mainClass = findProperty('mainClass') ?: 'io.honeycomb.masterclass.instrumentationtraps.contextpropagation.Before'
+    classpath = sourceSets.main.runtimeClasspath
+}

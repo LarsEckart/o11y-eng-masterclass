@@ -1,0 +1,5 @@
+rootProject.name = 'session-1-fundamentals-java'
+
+include 'otel-quickstart'
+include 'seed-sample-service'
+include 'instrumentation-traps'

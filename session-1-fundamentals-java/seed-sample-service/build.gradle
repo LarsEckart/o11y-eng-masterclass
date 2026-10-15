@@ -1,0 +1,5 @@
+apply plugin: 'application'
+
+application {
+    mainClass = 'io.honeycomb.masterclass.seedsampleservice.SeedSampleService'
+}
