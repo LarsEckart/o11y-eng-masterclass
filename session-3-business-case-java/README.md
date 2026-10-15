@@ -110,6 +110,10 @@ version; attribute names and values match it exactly, so nothing there changes.
   one 1,024-span batch in flight, and the receiver sleeps 20 ms per request, so
   a seeder that flushes only at the end loses spans and the test fails. Go
   runs the seeder once per test; Java runs it once and shares the result.
+  A second test, `failsLoudlyWhenTheReceiverRejectsExports`, runs the seeder
+  against a receiver that answers every export with `INTERNAL` and expects a
+  non-zero exit, the "is the Collector up?" message and no "seeded" line. It
+  has no Go counterpart; it guards the exporter wrapper described next.
 - **Failed flushes.** Go's `ForceFlush` returns the exporter's error. Java's
   `forceFlush()` reports success even when every export failed, so the seeder
   wraps the exporter and counts failures. A dead Collector stops the seeder with

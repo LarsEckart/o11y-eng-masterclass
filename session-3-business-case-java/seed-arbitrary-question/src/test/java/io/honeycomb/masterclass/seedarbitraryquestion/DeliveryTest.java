@@ -1,6 +1,7 @@
 package io.honeycomb.masterclass.seedarbitraryquestion;
 
 import io.grpc.Server;
+import io.grpc.Status;
 import io.grpc.netty.shaded.io.grpc.netty.NettyServerBuilder;
 import io.grpc.stub.StreamObserver;
 import io.honeycomb.masterclass.seedarbitraryquestion.wideevent.Event;
@@ -87,11 +88,16 @@ class DeliveryTest {
 
     private record ReceivedSpan(String name, String parentId, Map<String, String> attrs, long start, long end) {}
 
-    /** The fake Collector: remembers every span it is sent. */
+    /** The fake Collector: remembers every span it is sent, or rejects every export. */
     private static final class Collector extends TraceServiceGrpc.TraceServiceImplBase {
         // gRPC calls Export on several threads, so access is synchronised
         // (Go's version guards its slice with a mutex).
         private final List<ReceivedSpan> spans = Collections.synchronizedList(new ArrayList<>());
+        private final boolean failExports;
+
+        Collector(boolean failExports) {
+            this.failExports = failExports;
+        }
 
         @Override
         public void export(ExportTraceServiceRequest request, StreamObserver<ExportTraceServiceResponse> responseObserver) {
@@ -99,6 +105,12 @@ class DeliveryTest {
                 Thread.sleep(RECEIVER_DELAY_MILLIS);
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
+            }
+            if (failExports) {
+                // INTERNAL is not retried by the exporter. UNAVAILABLE would be,
+                // with backoff, and the failure test would take many seconds.
+                responseObserver.onError(Status.INTERNAL.withDescription("rejected by test").asRuntimeException());
+                return;
             }
             for (var rs : request.getResourceSpansList()) {
                 for (var ss : rs.getScopeSpansList()) {
@@ -138,16 +150,14 @@ class DeliveryTest {
 
     private static List<ReceivedSpan> received;
 
+    /** What the seeder process printed and how it exited. */
+    private record SeederRun(int exitCode, String output) {}
+
     /**
      * Starts an in-process OTLP/gRPC receiver, runs the seeder in a child JVM
-     * against it, and returns everything the receiver saw. Runs once; later
-     * calls reuse the result.
+     * against it, and returns how the process ended.
      */
-    private static synchronized List<ReceivedSpan> runSeeder() throws Exception {
-        if (received != null) {
-            return received;
-        }
-        var sink = new Collector();
+    private static SeederRun startSeeder(Collector sink, int seedCount) throws Exception {
         Server server = NettyServerBuilder
                 .forAddress(new InetSocketAddress(InetAddress.getLoopbackAddress(), 0))
                 .addService(sink)
@@ -163,7 +173,7 @@ class DeliveryTest {
                     SeedArbitraryQuestion.class.getName())
                     .redirectErrorStream(true);
             builder.environment().put("OTEL_EXPORTER_OTLP_ENDPOINT", "127.0.0.1:" + server.getPort());
-            builder.environment().put("SEED_COUNT", Integer.toString(SEED_COUNT));
+            builder.environment().put("SEED_COUNT", Integer.toString(seedCount));
 
             var process = builder.start();
             String output = new String(process.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
@@ -171,15 +181,27 @@ class DeliveryTest {
                 process.destroyForcibly();
                 throw new AssertionError("seeder did not finish in 3 minutes:\n" + output);
             }
-            assertThat(process.exitValue()).as("seeder exit code:\n%s", output).isZero();
-            assertThat(output).as("seeder did not report success").contains("seeded");
-
-            received = sink.collected();
-            return received;
+            return new SeederRun(process.exitValue(), output);
         } finally {
             server.shutdownNow();
             server.awaitTermination(10, TimeUnit.SECONDS);
         }
+    }
+
+    /**
+     * Runs the seeder against a healthy receiver and returns everything the
+     * receiver saw. Runs once; later calls reuse the result.
+     */
+    private static synchronized List<ReceivedSpan> runSeeder() throws Exception {
+        if (received != null) {
+            return received;
+        }
+        var sink = new Collector(false);
+        SeederRun run = startSeeder(sink, SEED_COUNT);
+        assertThat(run.exitCode()).as("seeder exit code:\n%s", run.output()).isZero();
+        assertThat(run.output()).as("seeder did not report success").contains("seeded");
+        received = sink.collected();
+        return received;
     }
 
     /**
@@ -212,6 +234,20 @@ class DeliveryTest {
                 .as("root spans received; spans are being dropped between the SDK and the wire")
                 .hasSize(SEED_COUNT);
         assertThat(spans).as("spans received in total").hasSize(SEED_COUNT * WANT_SPANS_PER_TRACE);
+    }
+
+    /**
+     * No Go counterpart (Go's ForceFlush returns the export error by itself).
+     * Java's SDK reports a flush as successful even when the export failed, so
+     * the seeder wraps the exporter to notice. Without that, a seed against a
+     * dead Collector would print "seeded N checkout events" and deliver nothing.
+     */
+    @Test
+    void failsLoudlyWhenTheReceiverRejectsExports() throws Exception {
+        SeederRun run = startSeeder(new Collector(true), 50);
+
+        assertThat(run.exitCode()).as("seeder exit code:\n%s", run.output()).isNotZero();
+        assertThat(run.output()).contains("is the Collector up?").doesNotContain("seeded");
     }
 
     /**
