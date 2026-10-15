@@ -12,19 +12,21 @@ dependencies {
     implementation "io.opentelemetry.semconv:opentelemetry-semconv:${semconvVersion}"
 
     testImplementation 'io.opentelemetry:opentelemetry-sdk-testing'
-    // Test only: decodes the protobuf bodies the fake OTLP receiver gets. The Go
-    // test uses the same generated types (go.opentelemetry.io/proto/otlp).
+    // Test only: a real gRPC server for the delivery test to receive spans on.
+    // The JDK's HttpServer speaks HTTP/1.1 only and OTLP/gRPC needs HTTP/2, so
+    // it cannot stand in for the Collector. See DeliveryTest.
     testImplementation "io.opentelemetry.proto:opentelemetry-proto:${otelProtoVersion}"
+    testImplementation "io.grpc:grpc-netty-shaded:${grpcVersion}"
+    testImplementation "io.grpc:grpc-stub:${grpcVersion}"
+    testImplementation "io.grpc:grpc-protobuf:${grpcVersion}"
 }
 
-// The delivery test launches the real seeder in a child JVM. It needs the
-// classpath of the main code to do that, and Gradle's test worker does not
-// expose it reliably through java.class.path, so we hand it over explicitly.
+// The delivery test runs the seeder as a separate JVM, like a user would, and
+// needs the seeder's runtime classpath to start it with. Passed as a system
+// property named seeder.classpath.
 def seederClasspath = sourceSets.main.runtimeClasspath
 
 tasks.named('test') {
     inputs.files(seederClasspath)
-    doFirst {
-        systemProperty 'seeder.classpath', seederClasspath.asPath
-    }
+    jvmArgumentProviders.add({ ["-Dseeder.classpath=${seederClasspath.asPath}"] } as CommandLineArgumentProvider)
 }

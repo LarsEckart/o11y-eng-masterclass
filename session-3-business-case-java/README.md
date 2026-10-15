@@ -80,7 +80,6 @@ The seeder reads these environment variables:
 | Variable | Default | Meaning |
 |---|---|---|
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | `localhost:4317` | Collector address (`host:port` or a full `http://` URL) |
-| `OTEL_EXPORTER_OTLP_PROTOCOL` | `grpc` | `grpc`, or `http/protobuf` (Java-only, see below) |
 | `SEED_COUNT` | `20000` | Number of events |
 | `SEED_WINDOW` | `168h` | How far back to spread them, in Go duration syntax (`72h`, `1h30m`) |
 
@@ -102,12 +101,15 @@ version; attribute names and values match it exactly, so nothing there changes.
   different algorithms, so a fixed seed gives different events. The weights and
   ranges are identical, and the tests assert the same shares and thresholds.
   The seeder seeds from the clock anyway, as in Go.
-- **Delivery test.** The Go test starts a gRPC server and runs `go run .`. The
-  Java test starts a JDK `HttpServer`, launches the seeder in a child JVM, and
-  decodes the protobuf bodies with the OTel proto classes (test dependency
-  `io.opentelemetry.proto:opentelemetry-proto`). To make that possible the
-  seeder honours the standard `OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf`;
-  without it the seeder uses gRPC exactly like the Go one.
+- **Delivery test.** Same standard as the Go one. The test starts a real
+  OTLP/gRPC server (`grpc-netty-shaded`, with the OTel proto classes to decode
+  requests; all test-only dependencies) and runs the seeder as a separate JVM,
+  where Go runs `go run .`. The build passes the seeder's classpath to the test
+  in the `seeder.classpath` system property. The seeder speaks gRPC only, like
+  the Go one. The test seeds 12,000 spans, more than the 8,192-span queue plus
+  one 1,024-span batch in flight, and the receiver sleeps 20 ms per request, so
+  a seeder that flushes only at the end loses spans and the test fails. Go
+  runs the seeder once per test; Java runs it once and shares the result.
 - **Failed flushes.** Go's `ForceFlush` returns the exporter's error. Java's
   `forceFlush()` reports success even when every export failed, so the seeder
   wraps the exporter and counts failures. A dead Collector stops the seeder with

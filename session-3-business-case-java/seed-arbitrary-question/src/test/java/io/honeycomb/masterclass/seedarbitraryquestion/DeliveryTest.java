@@ -1,90 +1,129 @@
 package io.honeycomb.masterclass.seedarbitraryquestion;
 
-import com.sun.net.httpserver.HttpExchange;
-import com.sun.net.httpserver.HttpServer;
+import io.grpc.Server;
+import io.grpc.netty.shaded.io.grpc.netty.NettyServerBuilder;
+import io.grpc.stub.StreamObserver;
 import io.honeycomb.masterclass.seedarbitraryquestion.wideevent.Event;
 import io.opentelemetry.proto.collector.trace.v1.ExportTraceServiceRequest;
 import io.opentelemetry.proto.collector.trace.v1.ExportTraceServiceResponse;
+import io.opentelemetry.proto.collector.trace.v1.TraceServiceGrpc;
 import io.opentelemetry.proto.common.v1.AnyValue;
 import io.opentelemetry.proto.common.v1.KeyValue;
-import io.opentelemetry.proto.trace.v1.ResourceSpans;
-import io.opentelemetry.proto.trace.v1.ScopeSpans;
-import io.opentelemetry.proto.trace.v1.Span;
-import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.Test;
 
-import java.io.IOException;
-import java.io.InputStream;
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
-import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.HexFormat;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
-import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
-import java.util.zip.GZIPInputStream;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * End-to-end test of the shipped command, for the same reason as the other
- * seeders: the bug this prevents lived in the gap between "the data was built
- * correctly" and "the data arrived".
+ * An end-to-end test of the shipped command rather than of a function inside
+ * it, because the bug it exists to prevent lived in the gap between "the data
+ * was built correctly" and "the data arrived".
  *
  * <p>The BatchSpanProcessor silently drops spans that overflow its queue (2048
- * by default in Go, 2048 in Java too). An earlier version of this seeder
- * generated all 10,000 requests and then flushed once at the end, so ~95% of
- * them were dropped, and the command exited zero, printing a cheerful success
- * message. Every unit test passed, because the generator was producing the data
- * correctly. The data just never arrived.
+ * by default in the OTel SDKs; this seeder sets 8192). An earlier version of
+ * this seeder generated all 10,000 requests and then flushed once at the end,
+ * so ~95% of them were dropped, and the command exited zero, printing a
+ * cheerful success message. Every unit test passed, because the generator was
+ * producing the data correctly. The data just never arrived.
  *
- * <p>So: run the real program, point it at a real OTLP receiver, and count what
- * actually lands on the wire.
+ * <p>So: run the real program in its own JVM, point it at a real OTLP receiver,
+ * and count what actually lands on the wire.
  *
- * <p>Where this differs from the Go test:
+ * <p>The receiver is a gRPC server, not the JDK's {@code HttpServer}. The
+ * seeder ships spans with OTLP over gRPC, which needs HTTP/2, and
+ * {@code HttpServer} only speaks HTTP/1.1.
  *
- * <ul>
- *   <li>The receiver is a JDK {@link HttpServer} speaking OTLP over HTTP, not a
- *       gRPC server. The seeder switches to HTTP through the standard
- *       {@code OTEL_EXPORTER_OTLP_PROTOCOL} variable.
- *   <li>"The real binary" is a child JVM started with the main classes on its
- *       classpath, where Go uses {@code go run .}.
- *   <li>The seeder runs once and the tests share what it delivered. Go runs it
- *       once per test, which costs more and checks nothing extra.
- * </ul>
+ * <p>Where this differs from the Go test: "the real binary" is a child JVM
+ * started with the main classes on its classpath, where Go uses
+ * {@code go run .}, and the seeder runs once with the tests sharing what it
+ * delivered. Go runs it once per test, which costs more and checks nothing
+ * extra.
  */
 class DeliveryTest {
 
     /**
-     * Must produce more spans than {@code MAX_QUEUE_SIZE}, or this test cannot
-     * observe a dropped-span regression at all.
-     * {@link #seedVolumeExceedsQueue()} enforces that rather than leaving it to
-     * a comment. One span per event here, so the count itself has to clear the
-     * queue depth.
+     * Must produce more spans than the queue holds, or this test cannot observe
+     * a dropped-span regression at all. The real threshold is
+     * {@link #DROP_THRESHOLD}, not just {@code MAX_QUEUE_SIZE}:
+     * {@link #seedVolumeExceedsQueue()} enforces it rather than leaving it to a
+     * comment. One span per event here, so the count itself has to clear it.
      */
     private static final int SEED_COUNT = 12000;
 
     /** One span per event: this dataset is canonical-log shaped, not trace shaped. */
     private static final int WANT_SPANS_PER_TRACE = 1;
 
+    /**
+     * Spans an unchunked seeder can hold without dropping any. The queue holds
+     * {@code MAX_QUEUE_SIZE}, and the Java batch worker takes one batch off the
+     * queue before it exports, so one more batch fits in flight. Only past this
+     * count does the last-flush-only mutation lose spans.
+     */
+    private static final int DROP_THRESHOLD =
+            SeedArbitraryQuestion.MAX_QUEUE_SIZE + SeedArbitraryQuestion.MAX_EXPORT_BATCH_SIZE;
+
+    /**
+     * Delay per Export call, so the receiver acts like a Collector under load
+     * instead of an instant loopback. Slow exports let the queue fill while the
+     * seeder keeps generating spans. Tuned by removing the chunked flush from
+     * the seeder (flush only at the end) and running this test: it fails with
+     * {@link #SEED_COUNT} = 12000 (above {@link #DROP_THRESHOLD} = 9216), with
+     * or without this delay. The delay is margin for fast machines, where the
+     * worker might otherwise drain the queue as quickly as it fills.
+     */
+    private static final long RECEIVER_DELAY_MILLIS = 20;
+
     private record ReceivedSpan(String name, String parentId, Map<String, String> attrs, long start, long end) {}
 
-    private static HttpServer server;
-    private static List<ReceivedSpan> received;
+    /** The fake Collector: remembers every span it is sent. */
+    private static final class Collector extends TraceServiceGrpc.TraceServiceImplBase {
+        // gRPC calls Export on several threads, so access is synchronised
+        // (Go's version guards its slice with a mutex).
+        private final List<ReceivedSpan> spans = Collections.synchronizedList(new ArrayList<>());
 
-    /** Collects every span the fake receiver is sent. */
-    private static final List<ReceivedSpan> sink = new ArrayList<>();
+        @Override
+        public void export(ExportTraceServiceRequest request, StreamObserver<ExportTraceServiceResponse> responseObserver) {
+            try {
+                Thread.sleep(RECEIVER_DELAY_MILLIS);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+            for (var rs : request.getResourceSpansList()) {
+                for (var ss : rs.getScopeSpansList()) {
+                    for (var span : ss.getSpansList()) {
+                        var attrs = new HashMap<String, String>();
+                        for (KeyValue kv : span.getAttributesList()) {
+                            attrs.put(kv.getKey(), renderValue(kv.getValue()));
+                        }
+                        spans.add(new ReceivedSpan(
+                                span.getName(),
+                                HexFormat.of().formatHex(span.getParentSpanId().toByteArray()),
+                                attrs,
+                                span.getStartTimeUnixNano(),
+                                span.getEndTimeUnixNano()));
+                    }
+                }
+            }
+            responseObserver.onNext(ExportTraceServiceResponse.getDefaultInstance());
+            responseObserver.onCompleted();
+        }
 
-    @AfterAll
-    static void stopReceiver() {
-        if (server != null) {
-            server.stop(0);
+        List<ReceivedSpan> collected() {
+            synchronized (spans) {
+                return List.copyOf(spans);
+            }
         }
     }
 
@@ -97,98 +136,67 @@ class DeliveryTest {
         };
     }
 
-    /** The OTLP/HTTP endpoint: decode the protobuf body and remember the spans. */
-    private static void handleExport(HttpExchange exchange) throws IOException {
-        byte[] body;
-        try (InputStream in = "gzip".equals(exchange.getRequestHeaders().getFirst("Content-Encoding"))
-                ? new GZIPInputStream(exchange.getRequestBody())
-                : exchange.getRequestBody()) {
-            body = in.readAllBytes();
-        }
-
-        ExportTraceServiceRequest req = ExportTraceServiceRequest.parseFrom(body);
-        List<ReceivedSpan> batch = new ArrayList<>();
-        for (ResourceSpans rs : req.getResourceSpansList()) {
-            for (ScopeSpans ss : rs.getScopeSpansList()) {
-                for (Span span : ss.getSpansList()) {
-                    Map<String, String> attrs = new HashMap<>();
-                    for (KeyValue kv : span.getAttributesList()) {
-                        attrs.put(kv.getKey(), renderValue(kv.getValue()));
-                    }
-                    batch.add(new ReceivedSpan(
-                            span.getName(),
-                            HexFormat.of().formatHex(span.getParentSpanId().toByteArray()),
-                            attrs,
-                            span.getStartTimeUnixNano(),
-                            span.getEndTimeUnixNano()));
-                }
-            }
-        }
-        synchronized (sink) {
-            sink.addAll(batch);
-        }
-
-        byte[] response = ExportTraceServiceResponse.getDefaultInstance().toByteArray();
-        exchange.getResponseHeaders().add("Content-Type", "application/x-protobuf");
-        exchange.sendResponseHeaders(200, response.length == 0 ? -1 : response.length);
-        if (response.length > 0) {
-            exchange.getResponseBody().write(response);
-        }
-        exchange.close();
-    }
+    private static List<ReceivedSpan> received;
 
     /**
-     * Starts an in-process OTLP receiver, runs the seeder against it, and
-     * returns everything the receiver saw. Runs once; later calls reuse the
-     * result.
+     * Starts an in-process OTLP/gRPC receiver, runs the seeder in a child JVM
+     * against it, and returns everything the receiver saw. Runs once; later
+     * calls reuse the result.
      */
     private static synchronized List<ReceivedSpan> runSeeder() throws Exception {
         if (received != null) {
             return received;
         }
+        var sink = new Collector();
+        Server server = NettyServerBuilder
+                .forAddress(new InetSocketAddress(InetAddress.getLoopbackAddress(), 0))
+                .addService(sink)
+                .build()
+                .start();
+        try {
+            // Go runs `go run .`. The Java equivalent is the same main class
+            // the Gradle `run` task starts, in a fresh JVM with the same
+            // classpath. The classpath comes from the build file.
+            var builder = new ProcessBuilder(
+                    System.getProperty("java.home") + "/bin/java",
+                    "-cp", System.getProperty("seeder.classpath"),
+                    SeedArbitraryQuestion.class.getName())
+                    .redirectErrorStream(true);
+            builder.environment().put("OTEL_EXPORTER_OTLP_ENDPOINT", "127.0.0.1:" + server.getPort());
+            builder.environment().put("SEED_COUNT", Integer.toString(SEED_COUNT));
 
-        server = HttpServer.create(new InetSocketAddress(InetAddress.getLoopbackAddress(), 0), 0);
-        server.createContext("/v1/traces", DeliveryTest::handleExport);
-        server.setExecutor(Executors.newCachedThreadPool());
-        server.start();
+            var process = builder.start();
+            String output = new String(process.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
+            if (!process.waitFor(3, TimeUnit.MINUTES)) {
+                process.destroyForcibly();
+                throw new AssertionError("seeder did not finish in 3 minutes:\n" + output);
+            }
+            assertThat(process.exitValue()).as("seeder exit code:\n%s", output).isZero();
+            assertThat(output).as("seeder did not report success").contains("seeded");
 
-        String javaBin = Path.of(System.getProperty("java.home"), "bin", "java").toString();
-        ProcessBuilder pb = new ProcessBuilder(
-                javaBin, "-cp", System.getProperty("seeder.classpath"), SeedArbitraryQuestion.class.getName());
-        pb.environment().put("OTEL_EXPORTER_OTLP_ENDPOINT", "127.0.0.1:" + server.getAddress().getPort());
-        pb.environment().put("OTEL_EXPORTER_OTLP_PROTOCOL", "http/protobuf");
-        pb.environment().put("SEED_COUNT", Integer.toString(SEED_COUNT));
-        pb.redirectErrorStream(true);
-
-        Process process = pb.start();
-        String out = new String(process.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
-        if (!process.waitFor(3, TimeUnit.MINUTES)) {
-            process.destroyForcibly();
-            throw new AssertionError("seeder did not finish in 3 minutes:\n" + out);
+            received = sink.collected();
+            return received;
+        } finally {
+            server.shutdownNow();
+            server.awaitTermination(10, TimeUnit.SECONDS);
         }
-        assertThat(process.exitValue()).as("seeder failed:\n%s", out).isZero();
-        assertThat(out).as("seeder did not report success").contains("seeded");
-
-        synchronized (sink) {
-            received = List.copyOf(sink);
-        }
-        return received;
     }
 
     /**
-     * Keeps the delivery test honest. At a volume below the queue depth, an
-     * unchunked flush delivers everything anyway and the delivery test passes
-     * on broken code, which is exactly what happened the first time this file
-     * was written.
+     * Keeps the delivery test honest. At a volume below {@link #DROP_THRESHOLD},
+     * an unchunked flush delivers everything anyway and the delivery test
+     * passes on broken code, which is exactly what happened the first time this
+     * file was written.
      */
     @Test
     void seedVolumeExceedsQueue() {
         int spans = SEED_COUNT * WANT_SPANS_PER_TRACE;
         assertThat(spans)
-                .as("test seeds %d spans against a %d-span queue; nothing would be dropped even without "
-                        + "chunked flushing, so the delivery test proves nothing. Raise SEED_COUNT.",
-                        spans, SeedArbitraryQuestion.MAX_QUEUE_SIZE)
-                .isGreaterThan(SeedArbitraryQuestion.MAX_QUEUE_SIZE);
+                .as("test seeds %d spans but an unchunked seeder holds %d (a %d-span queue plus one in-flight batch); "
+                        + "nothing would be dropped even without chunked flushing, so the delivery test proves "
+                        + "nothing. Raise SEED_COUNT.",
+                        spans, DROP_THRESHOLD, SeedArbitraryQuestion.MAX_QUEUE_SIZE)
+                .isGreaterThan(DROP_THRESHOLD);
     }
 
     @Test
@@ -197,8 +205,8 @@ class DeliveryTest {
 
         List<ReceivedSpan> roots = spans.stream().filter(s -> s.parentId().isEmpty()).toList();
 
-        // The load-bearing assertion. SEED_COUNT spans is well past the
-        // 8192-span queue, so an unchunked flush fails here rather than in
+        // The load-bearing assertion. SEED_COUNT spans is well past
+        // DROP_THRESHOLD, so an unchunked flush fails here rather than in
         // production.
         assertThat(roots)
                 .as("root spans received; spans are being dropped between the SDK and the wire")

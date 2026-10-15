@@ -8,7 +8,6 @@ import io.opentelemetry.api.common.Attributes;
 import io.opentelemetry.api.trace.Span;
 import io.opentelemetry.api.trace.StatusCode;
 import io.opentelemetry.api.trace.Tracer;
-import io.opentelemetry.exporter.otlp.http.trace.OtlpHttpSpanExporter;
 import io.opentelemetry.exporter.otlp.trace.OtlpGrpcSpanExporter;
 import io.opentelemetry.sdk.common.CompletableResultCode;
 import io.opentelemetry.sdk.resources.Resource;
@@ -46,8 +45,6 @@ import java.util.concurrent.atomic.AtomicInteger;
  *   <li>{@code OTEL_EXPORTER_OTLP_ENDPOINT}: Collector address, default
  *       {@code localhost:4317}. Both {@code host:port} and a full
  *       {@code http://host:port} URL work.
- *   <li>{@code OTEL_EXPORTER_OTLP_PROTOCOL}: {@code grpc} (default) or
- *       {@code http/protobuf}. Java-only addition, see {@link #createExporter}.
  *   <li>{@code SEED_COUNT}: number of events, default 20000.
  *   <li>{@code SEED_WINDOW}: how far back to spread them, in Go duration syntax
  *       such as {@code 168h} (the default) or {@code 72h30m}.
@@ -64,6 +61,9 @@ public final class SeedArbitraryQuestion {
      */
     static final int MAX_QUEUE_SIZE = 8192;
 
+    /** Spans per export request. The delivery test adds it to the queue depth. */
+    static final int MAX_EXPORT_BATCH_SIZE = 1024;
+
     private SeedArbitraryQuestion() {}
 
     public static void main(String[] args) {
@@ -77,9 +77,8 @@ public final class SeedArbitraryQuestion {
     }
 
     private static void run() {
-        FailureTrackingExporter exporter = new FailureTrackingExporter(createExporter(
-                System.getenv("OTEL_EXPORTER_OTLP_ENDPOINT"),
-                System.getenv("OTEL_EXPORTER_OTLP_PROTOCOL")));
+        FailureTrackingExporter exporter = new FailureTrackingExporter(
+                createExporter(System.getenv("OTEL_EXPORTER_OTLP_ENDPOINT")));
         SdkTracerProvider provider = setupTracing(exporter);
         // Go keeps a package-level tracer from the global provider. Here the
         // provider is passed around explicitly instead; nothing is registered
@@ -180,16 +179,10 @@ public final class SeedArbitraryQuestion {
     }
 
     /**
-     * Builds the OTLP exporter for the given endpoint and protocol (either may
-     * be null).
-     *
-     * <p>The Go seeder always speaks gRPC, and so does this one by default.
-     * {@code OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf} switches to OTLP over
-     * HTTP. It is a standard OpenTelemetry variable, and it exists here so the
-     * delivery test can receive spans with a plain JDK {@code HttpServer}
-     * (gRPC would need an HTTP/2 server and generated stubs).
+     * Builds the OTLP/gRPC exporter for the given endpoint (null or empty means
+     * {@code localhost:4317}). Like the Go seeder, it speaks gRPC only.
      */
-    static SpanExporter createExporter(String endpoint, String protocol) {
+    static SpanExporter createExporter(String endpoint) {
         if (endpoint == null || endpoint.isEmpty()) {
             endpoint = "localhost:4317";
         }
@@ -199,12 +192,6 @@ public final class SeedArbitraryQuestion {
         // Honeycomb; the Collector holds the API key.
         if (!endpoint.contains("://")) {
             endpoint = "http://" + endpoint;
-        }
-
-        if (protocol != null && protocol.equals("http/protobuf")) {
-            return OtlpHttpSpanExporter.builder()
-                    .setEndpoint(endpoint.replaceAll("/+$", "") + "/v1/traces")
-                    .build();
         }
         return OtlpGrpcSpanExporter.builder().setEndpoint(endpoint).build();
     }
@@ -216,7 +203,7 @@ public final class SeedArbitraryQuestion {
         return SdkTracerProvider.builder()
                 .addSpanProcessor(BatchSpanProcessor.builder(exporter)
                         .setMaxQueueSize(MAX_QUEUE_SIZE)
-                        .setMaxExportBatchSize(1024)
+                        .setMaxExportBatchSize(MAX_EXPORT_BATCH_SIZE)
                         .build())
                 .setResource(resource)
                 .build();
