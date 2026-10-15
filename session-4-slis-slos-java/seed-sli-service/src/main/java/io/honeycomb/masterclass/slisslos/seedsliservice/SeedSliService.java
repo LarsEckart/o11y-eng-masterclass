@@ -9,7 +9,6 @@ import io.opentelemetry.api.common.AttributesBuilder;
 import io.opentelemetry.api.trace.Span;
 import io.opentelemetry.api.trace.StatusCode;
 import io.opentelemetry.api.trace.Tracer;
-import io.opentelemetry.exporter.otlp.http.trace.OtlpHttpSpanExporter;
 import io.opentelemetry.exporter.otlp.trace.OtlpGrpcSpanExporter;
 import io.opentelemetry.sdk.common.CompletableResultCode;
 import io.opentelemetry.sdk.resources.Resource;
@@ -84,12 +83,12 @@ public final class SeedSliService {
     }
 
     /**
-     * The whole program, with its inputs passed in. The Go test runs the real
-     * binary as a subprocess and sets environment variables on it. Java cannot
-     * change its own environment, so {@code main} hands over
-     * {@code System.getenv()} and the test hands over a map instead.
+     * The whole program, with its inputs passed in. The delivery test runs
+     * {@code main} in its own JVM, like Go's {@code go run .}, so nothing else
+     * calls this. The parameters just keep the environment and output visible
+     * at the top instead of buried in the body.
      */
-    static void run(Map<String, String> env, PrintStream out) {
+    private static void run(Map<String, String> env, PrintStream out) {
         Tracing tracing = setupTracing(env);
         SdkTracerProvider provider = tracing.provider();
         // Go registers the provider globally (otel.SetTracerProvider) and reads
@@ -204,7 +203,7 @@ public final class SeedSliService {
         }
 
         FailureTrackingExporter exporter =
-                new FailureTrackingExporter(createExporter(endpoint, env.get("OTEL_EXPORTER_OTLP_PROTOCOL")));
+                new FailureTrackingExporter(createExporter(endpoint));
 
         Resource resource = Resource.getDefault()
                 .merge(Resource.create(Attributes.of(ServiceAttributes.SERVICE_NAME, SERVICE_NAME)));
@@ -227,19 +226,9 @@ public final class SeedSliService {
      * Always plaintext, because this talks to the local Collector, never
      * straight to Honeycomb; the Collector holds the API key. (Go says
      * {@code WithInsecure()}; in Java an {@code http://} URL means the same.)
-     *
-     * <p>The Go seeder only speaks gRPC. This one also understands the standard
-     * {@code OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf} setting. gRPC needs an
-     * HTTP/2 server, which the JDK does not ship, so the delivery test uses
-     * OTLP over plain HTTP to reach a receiver built from the JDK alone. The
-     * default is still gRPC to port 4317, exactly like the Go version.
+     * gRPC only, to port 4317 by default, exactly like the Go version.
      */
-    private static SpanExporter createExporter(String endpoint, String protocol) {
-        if ("http/protobuf".equals(protocol)) {
-            // For HTTP, the SDK wants the full signal URL, not just the base.
-            String base = endpoint.endsWith("/") ? endpoint.substring(0, endpoint.length() - 1) : endpoint;
-            return OtlpHttpSpanExporter.builder().setEndpoint(base + "/v1/traces").build();
-        }
+    private static SpanExporter createExporter(String endpoint) {
         return OtlpGrpcSpanExporter.builder().setEndpoint(endpoint).build();
     }
 

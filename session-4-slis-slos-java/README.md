@@ -62,9 +62,14 @@ SEED_COUNT=5000 SEED_WINDOW=3h SEED_INCIDENT_AGO=30m ./gradlew :seed-sli-service
 
 Environment variables: `SEED_COUNT` (15000), `SEED_WINDOW` (6h),
 `SEED_INCIDENT_AGO` (60m), `OTEL_EXPORTER_OTLP_ENDPOINT` (`localhost:4317`).
-Durations use Go syntax such as `90m` or `1h30m`. The Java version also reads
-`OTEL_EXPORTER_OTLP_PROTOCOL`; the default is gRPC, and `http/protobuf` is there
-so the delivery test can use a receiver built from the JDK alone.
+Durations use Go syntax such as `90m` or `1h30m`. Like Go, the seeder speaks
+OTLP over gRPC only. A bare `host:port` endpoint works, as in Go; the Java
+version adds the `http://` the exporter wants.
+
+The delivery test runs the seeder in its own JVM, like Go's `go run .`, and
+catches spans on a real OTLP/gRPC server (`grpc-netty-shaded`, test scope
+only). Gradle passes it the seeder's classpath in the `seeder.classpath`
+system property.
 
 ## Pre-session checklist
 
