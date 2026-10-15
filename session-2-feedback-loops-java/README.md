@@ -105,5 +105,8 @@ and a full `http://host:port` URL both work.
   JDK `HttpServer` cannot play that role because OTLP/gRPC needs HTTP/2. The
   server and the OTLP message types come from test-only dependencies
   (`grpc-netty-shaded`, `grpc-stub`, `grpc-protobuf`, `opentelemetry-proto`).
+  `failsLoudlyWhenTheReceiverRejectsExports` has no Go twin. It points the seeder
+  at a receiver that rejects every export and expects a non-zero exit and the
+  "is the Collector up?" message. It fails if `FailureTrackingExporter` is removed.
 - **Paths in the output.** The seeder prints `cd` paths relative to this
   directory, not to the Go `cmd/` folder.
