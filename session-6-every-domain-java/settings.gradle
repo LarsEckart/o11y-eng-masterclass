@@ -1,0 +1,12 @@
+rootProject.name = 'session-6-every-domain-java'
+
+// Shared code (Go's internal/otlpexport, plus the fake Collector the delivery
+// tests use).
+include 'otlp-export'
+include 'otlp-test-support'
+
+// One subproject per Go cmd/ program. Each also holds the Go internal/*scenario
+// package that only that program uses.
+include 'seed-cicd-pipeline'
+include 'seed-perf-service'
+include 'seed-llm-eval-pipeline'

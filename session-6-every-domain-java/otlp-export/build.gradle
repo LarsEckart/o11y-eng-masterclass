@@ -1,0 +1,10 @@
+dependencies {
+    implementation platform("io.opentelemetry:opentelemetry-bom:${otelVersion}")
+    implementation 'io.opentelemetry:opentelemetry-sdk-trace'
+    implementation 'io.opentelemetry:opentelemetry-exporter-otlp'
+
+    // The tests build a real tracer provider around the exporter.
+    testImplementation 'io.opentelemetry:opentelemetry-api'
+    testImplementation 'io.opentelemetry:opentelemetry-sdk'
+    testImplementation project(':otlp-test-support')
+}

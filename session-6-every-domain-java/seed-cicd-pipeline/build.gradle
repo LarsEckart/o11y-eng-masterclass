@@ -1,0 +1,4 @@
+// Shared build setup for all seed-* programs is in the root build.gradle.
+application {
+    mainClass = 'io.honeycomb.masterclass.everydomain.seedcicdpipeline.SeedCicdPipeline'
+}

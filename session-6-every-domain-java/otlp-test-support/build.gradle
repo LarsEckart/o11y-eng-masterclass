@@ -1,0 +1,16 @@
+apply plugin: 'java-library'
+
+// Test-only helpers: a real gRPC server for the delivery tests to receive
+// spans on, and a helper that runs a seeder in its own JVM. The JDK's
+// HttpServer speaks HTTP/1.1 only and OTLP/gRPC needs HTTP/2, so it cannot
+// stand in for the Collector.
+//
+// Go repeats the receiver in every delivery_test.go. Here it lives once, and
+// the four test classes that need it depend on this subproject.
+dependencies {
+    api "io.opentelemetry.proto:opentelemetry-proto:${otelProtoVersion}"
+    api "io.grpc:grpc-netty-shaded:${grpcVersion}"
+    api "io.grpc:grpc-stub:${grpcVersion}"
+    api "io.grpc:grpc-protobuf:${grpcVersion}"
+    api 'org.assertj:assertj-core:3.27.3'
+}

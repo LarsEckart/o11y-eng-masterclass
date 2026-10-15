@@ -1,0 +1,63 @@
+allprojects {
+    group = 'io.honeycomb.masterclass'
+    version = '1.0.0'
+
+    repositories {
+        mavenCentral()
+    }
+}
+
+subprojects {
+    apply plugin: 'java'
+
+    java {
+        toolchain {
+            languageVersion = JavaLanguageVersion.of(25)
+        }
+    }
+
+    tasks.withType(JavaCompile).configureEach {
+        options.release = 25
+        options.compilerArgs += ['-Xlint:unchecked', '-Werror']
+    }
+
+    tasks.withType(Test).configureEach {
+        useJUnitPlatform()
+    }
+
+    dependencies {
+        testImplementation "org.junit.jupiter:junit-jupiter:${junitVersion}"
+        testImplementation 'org.assertj:assertj-core:3.27.3'
+        testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+    }
+}
+
+// The three seeder programs (seed-*) are built the same way, so the shared
+// parts live here and each seed-*/build.gradle only names its main class.
+// Go has one go.mod for all of them; this is the Gradle equivalent.
+configure(subprojects.findAll { it.name.startsWith('seed-') }) {
+    apply plugin: 'application'
+
+    dependencies {
+        implementation project(':otlp-export')
+
+        implementation platform("io.opentelemetry:opentelemetry-bom:${otelVersion}")
+        implementation 'io.opentelemetry:opentelemetry-api'
+        implementation 'io.opentelemetry:opentelemetry-sdk'
+        implementation 'io.opentelemetry:opentelemetry-sdk-trace'
+        implementation 'io.opentelemetry:opentelemetry-exporter-otlp'
+        implementation "io.opentelemetry.semconv:opentelemetry-semconv:${semconvVersion}"
+
+        testImplementation project(':otlp-test-support')
+    }
+
+    // The delivery tests run the seeder as a separate JVM, like a user would,
+    // and need the seeder's runtime classpath to start it with. Passed as a
+    // system property named seeder.classpath.
+    def seederClasspath = sourceSets.main.runtimeClasspath
+
+    tasks.named('test') {
+        inputs.files(seederClasspath)
+        jvmArgumentProviders.add({ ["-Dseeder.classpath=${seederClasspath.asPath}"] } as CommandLineArgumentProvider)
+    }
+}
