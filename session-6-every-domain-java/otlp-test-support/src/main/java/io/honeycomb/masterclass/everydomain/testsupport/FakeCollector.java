@@ -1,6 +1,7 @@
 package io.honeycomb.masterclass.everydomain.testsupport;
 
 import io.grpc.Server;
+import io.grpc.Status;
 import io.grpc.netty.shaded.io.grpc.netty.NettyServerBuilder;
 import io.grpc.stub.StreamObserver;
 import io.opentelemetry.proto.collector.trace.v1.ExportTraceServiceRequest;
@@ -54,7 +55,23 @@ public final class FakeCollector implements AutoCloseable {
      * See the delivery tests for the delay they use and why.</p>
      */
     public static FakeCollector start(Duration perExportDelay) throws IOException {
-        var sink = new Sink(perExportDelay);
+        return start(perExportDelay, false);
+    }
+
+    /**
+     * Starts a receiver that answers every export with a gRPC error and keeps
+     * nothing. It stands in for a Collector that is up but refuses the data.
+     *
+     * <p>The status is INTERNAL because the exporter does not retry it.
+     * UNAVAILABLE would be retried with backoff, and a test that expects
+     * failure would then take many seconds.</p>
+     */
+    public static FakeCollector startRejecting() throws IOException {
+        return start(Duration.ZERO, true);
+    }
+
+    private static FakeCollector start(Duration perExportDelay, boolean rejectExports) throws IOException {
+        var sink = new Sink(perExportDelay, rejectExports);
         Server server = NettyServerBuilder
                 .forAddress(new InetSocketAddress(InetAddress.getLoopbackAddress(), 0))
                 .addService(sink)
@@ -84,9 +101,11 @@ public final class FakeCollector implements AutoCloseable {
         // version guards its slice with a mutex).
         private final List<ReceivedSpan> spans = Collections.synchronizedList(new ArrayList<>());
         private final Duration delay;
+        private final boolean rejectExports;
 
-        Sink(Duration delay) {
+        Sink(Duration delay, boolean rejectExports) {
             this.delay = delay;
+            this.rejectExports = rejectExports;
         }
 
         @Override
@@ -97,6 +116,10 @@ public final class FakeCollector implements AutoCloseable {
                 } catch (InterruptedException e) {
                     Thread.currentThread().interrupt();
                 }
+            }
+            if (rejectExports) {
+                responseObserver.onError(Status.INTERNAL.withDescription("rejected by test").asRuntimeException());
+                return;
             }
             for (var rs : request.getResourceSpansList()) {
                 for (var ss : rs.getScopeSpansList()) {

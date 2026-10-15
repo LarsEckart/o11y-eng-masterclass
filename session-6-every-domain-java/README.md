@@ -88,6 +88,13 @@ stops with "is the Collector up?" and a non-zero exit code.
 The delivery tests start each seeder in its own JVM, so `./gradlew build` takes a
 few seconds longer than the unit tests alone would.
 
+Each delivery test class also has `failsLoudlyWhenTheReceiverRejectsExports`. It
+points the seeder at `FakeCollector.startRejecting()`, which answers every export
+with an error, and checks for a non-zero exit, the "is the Collector up?" message,
+and no "seeded" line. Java's `forceFlush()` reports success even when every export
+failed, so only `FailureTrackingExporter` makes the seeder fail. Without this test,
+deleting that wrapper would break nothing.
+
 ## Pre-session checklist
 
 1. Start the Collector:

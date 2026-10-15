@@ -20,6 +20,10 @@ public final class SeederProcess {
     private SeederProcess() {
     }
 
+    /** What a seeder run left behind: its exit code and everything it printed. */
+    public record Result(int exitCode, String output) {
+    }
+
     /**
      * Runs {@code mainClass} with {@code OTEL_EXPORTER_OTLP_ENDPOINT} pointing
      * at {@code collector} and {@code SEED_COUNT} set, waits for it to finish,
@@ -28,6 +32,24 @@ public final class SeederProcess {
      * <p>Fails if the seeder exits non-zero or does not print "seeded".</p>
      */
     public static java.util.List<ReceivedSpan> run(Class<?> mainClass, FakeCollector collector, int seedCount)
+            throws IOException, InterruptedException {
+        Result result = launch(mainClass, collector, seedCount);
+        assertThat(result.exitCode()).as("seeder exit code:\n%s", result.output()).isZero();
+        assertThat(result.output()).as("seeder did not report success").contains("seeded");
+        return collector.collected();
+    }
+
+    /**
+     * Like {@link #run}, but makes no claim about the outcome. Use it when the
+     * test expects the seeder to fail, for example against
+     * {@link FakeCollector#startRejecting()}.
+     */
+    public static Result runAllowingFailure(Class<?> mainClass, FakeCollector collector, int seedCount)
+            throws IOException, InterruptedException {
+        return launch(mainClass, collector, seedCount);
+    }
+
+    private static Result launch(Class<?> mainClass, FakeCollector collector, int seedCount)
             throws IOException, InterruptedException {
         // Output goes to a file, not a pipe. Reading a pipe to the end would
         // block until the seeder exits and make the timeout below useless.
@@ -49,10 +71,7 @@ public final class SeederProcess {
                 process.destroyForcibly();
                 throw new AssertionError("seeder did not finish in 3 minutes:\n" + output);
             }
-            assertThat(process.exitValue()).as("seeder exit code:\n%s", output).isZero();
-            assertThat(output).as("seeder did not report success").contains("seeded");
-
-            return collector.collected();
+            return new Result(process.exitValue(), output);
         } finally {
             Files.deleteIfExists(log);
         }

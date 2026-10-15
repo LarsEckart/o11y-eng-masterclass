@@ -57,6 +57,25 @@ class DeliveryTest {
     }
 
     /**
+     * Java's {@code forceFlush()} reports success even when every export
+     * failed, so the seeder wraps its exporter in {@code FailureTrackingExporter}.
+     * Without this test, deleting that wrapper breaks nothing: a Collector that
+     * rejects the data would still get "seeded N" and exit code 0. The receiver
+     * answers INTERNAL, which the exporter does not retry, so the test stays fast.
+     */
+    @Test
+    void failsLoudlyWhenTheReceiverRejectsExports() throws Exception {
+        try (var collector = FakeCollector.startRejecting()) {
+            var result = SeederProcess.runAllowingFailure(SeedCicdPipeline.class, collector, 50);
+
+            assertThat(result.exitCode()).as("seeder exit code:\n%s", result.output()).isNotZero();
+            assertThat(result.output())
+                    .contains("is the Collector up?")
+                    .doesNotContain("seeded");
+        }
+    }
+
+    /**
      * Keeps the delivery test honest. At a volume below the queue depth, an
      * unchunked flush delivers everything anyway and the delivery test passes
      * on broken code.
