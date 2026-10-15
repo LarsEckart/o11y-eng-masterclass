@@ -6,7 +6,6 @@ import io.opentelemetry.api.trace.Span;
 import io.opentelemetry.api.trace.StatusCode;
 import io.opentelemetry.api.trace.Tracer;
 import io.opentelemetry.context.Context;
-import io.opentelemetry.exporter.otlp.http.trace.OtlpHttpSpanExporter;
 import io.opentelemetry.exporter.otlp.trace.OtlpGrpcSpanExporter;
 import io.opentelemetry.sdk.common.CompletableResultCode;
 import io.opentelemetry.sdk.resources.Resource;
@@ -57,6 +56,13 @@ public final class SeedCostSamplingService {
      */
     static final int MAX_QUEUE_SIZE = 8192;
 
+    /**
+     * Spans per export call. Also needed by the delivery test: the batch worker
+     * takes one batch off the queue before it starts exporting, so a spans
+     * count has to beat MAX_QUEUE_SIZE plus this to overflow the queue.
+     */
+    static final int MAX_EXPORT_BATCH_SIZE = 1024;
+
     public static void main(String[] args) {
         try {
             run(System.getenv(), System.out);
@@ -69,18 +75,16 @@ public final class SeedCostSamplingService {
 
     /**
      * The whole seeder. It takes its environment and output as arguments, not
-     * from System.getenv() and System.out, so the delivery test can run the
-     * real seeder in-process with its own settings. Go's delivery test
-     * launches {@code go run .} as a child process to get the same effect;
-     * the JVM cannot change its own environment variables, so we pass them in.
+     * from System.getenv() and System.out, which keeps {@link #main} a thin
+     * wrapper. The delivery test does not call this directly: like Go's
+     * {@code go run .}, it starts {@link #main} in a separate JVM.
      */
     static void run(Map<String, String> env, PrintStream out) {
         var exporter = new FailureCountingExporter(createExporter(env));
         SdkTracerProvider provider = setupTracing(exporter);
         // No global tracer here. Go's seeder calls otel.SetTracerProvider and
         // keeps a package-level `tracer`. We keep the tracer local and pass it
-        // to emit(), which also lets the delivery test run the seeder many
-        // times in one JVM (GlobalOpenTelemetry can only be set once).
+        // to emit().
         Tracer tracer = provider.get(SERVICE_NAME);
 
         Scenario.Config cfg = Scenario.defaultConfig();
@@ -89,7 +93,7 @@ public final class SeedCostSamplingService {
             cfg = cfg.withRequestCount(count);
         }
 
-        // The delivery test sets this to 0: its in-process receiver never
+        // The delivery test sets this tiny: its fake receiver never
         // samples, so pacing for the Collector's adjustment_interval buys
         // nothing.
         Duration duration = parseDuration(env.get("SEED_DURATION"));
@@ -104,7 +108,7 @@ public final class SeedCostSamplingService {
         // rate only settles in after adjustment_interval (15s) has seen
         // enough traces to adapt. Exit immediately after flushing and you'd
         // race the Collector's own decision window. The delivery test
-        // overrides this to near-zero: its in-process receiver never samples,
+        // overrides this to near-zero: its fake receiver never samples,
         // so there's nothing to wait for.
         Duration settleWait = Duration.ofSeconds(15);
         Duration settleOverride = parseDuration(env.get("SEED_SETTLE_WAIT"));
@@ -244,14 +248,6 @@ public final class SeedCostSamplingService {
     }
 
     private static SpanExporter createExporter(Map<String, String> env) {
-        // OTEL_EXPORTER_OTLP_PROTOCOL is a standard OTel env var. The default,
-        // grpc, is what the seeder (and the Go version) always uses against
-        // the Collector. http/protobuf exists so the delivery test can use a
-        // plain JDK HttpServer as its fake receiver; the JDK's server cannot
-        // speak gRPC's HTTP/2.
-        String protocol = blankToNull(env.get("OTEL_EXPORTER_OTLP_PROTOCOL"));
-        boolean http = "http/protobuf".equals(protocol);
-
         // Go takes a bare host:port here (it has no scheme) and calls
         // WithInsecure(). Java's exporter wants a URL, so add http:// when
         // the value has no scheme. Plaintext in both cases: this always
@@ -260,16 +256,12 @@ public final class SeedCostSamplingService {
         // decision.
         String endpoint = blankToNull(env.get("OTEL_EXPORTER_OTLP_ENDPOINT"));
         if (endpoint == null) {
-            endpoint = http ? "localhost:4318" : "localhost:4317";
+            endpoint = "localhost:4317";
         }
         if (!endpoint.contains("://")) {
             endpoint = "http://" + endpoint;
         }
 
-        if (http) {
-            String base = endpoint.endsWith("/") ? endpoint.substring(0, endpoint.length() - 1) : endpoint;
-            return OtlpHttpSpanExporter.builder().setEndpoint(base + "/v1/traces").build();
-        }
         return OtlpGrpcSpanExporter.builder().setEndpoint(endpoint).build();
     }
 
@@ -280,7 +272,7 @@ public final class SeedCostSamplingService {
         return SdkTracerProvider.builder()
             .addSpanProcessor(BatchSpanProcessor.builder(exporter)
                 .setMaxQueueSize(MAX_QUEUE_SIZE)
-                .setMaxExportBatchSize(1024)
+                .setMaxExportBatchSize(MAX_EXPORT_BATCH_SIZE)
                 .build())
             .setResource(resource)
             .build();

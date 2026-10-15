@@ -5,10 +5,24 @@ application {
 }
 
 dependencies {
-    // Test only. The delivery test runs a fake OTLP receiver and needs the
-    // generated protobuf classes to decode what the exporter sent. The OTel
-    // SDK ships only hand-written encoders, so it has nothing to decode with.
-    // This pulls in protobuf-java too. Go's delivery test imports the same
-    // thing (go.opentelemetry.io/proto/otlp).
-    testImplementation 'io.opentelemetry.proto:opentelemetry-proto:1.11.1-alpha'
+    // Test only: a real OTLP/gRPC server for the delivery test to receive
+    // spans on, plus the generated protobuf classes to decode what the
+    // exporter sent. The JDK's HttpServer speaks HTTP/1.1 only and OTLP/gRPC
+    // needs HTTP/2, so it cannot stand in for the Collector. Go's delivery
+    // test does the same with google.golang.org/grpc and
+    // go.opentelemetry.io/proto/otlp. See SeedCostSamplingServiceDeliveryTest.
+    testImplementation "io.opentelemetry.proto:opentelemetry-proto:${otelProtoVersion}"
+    testImplementation "io.grpc:grpc-netty-shaded:${grpcVersion}"
+    testImplementation "io.grpc:grpc-stub:${grpcVersion}"
+    testImplementation "io.grpc:grpc-protobuf:${grpcVersion}"
+}
+
+// The delivery test runs the seeder as a separate JVM, like a user would, and
+// needs the seeder's runtime classpath to start it with. Passed as a system
+// property named seeder.classpath.
+def seederClasspath = sourceSets.main.runtimeClasspath
+
+tasks.named('test') {
+    inputs.files(seederClasspath)
+    jvmArgumentProviders.add({ ["-Dseeder.classpath=${seederClasspath.asPath}"] } as CommandLineArgumentProvider)
 }

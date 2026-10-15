@@ -61,8 +61,7 @@ Tuning uses the same environment variables as Go:
 | `SEED_COUNT` | `5000` | requests to emit (two spans each) |
 | `SEED_DURATION` | `90s` | time to pace emission over; must span several of the Collector's `adjustment_interval`s |
 | `SEED_SETTLE_WAIT` | `15s` | wait after the last flush for the Collector's `decision_delay` and `adjustment_interval` |
-| `OTEL_EXPORTER_OTLP_ENDPOINT` | `localhost:4317` | the Collector, plain text (a `http://` prefix is optional) |
-| `OTEL_EXPORTER_OTLP_PROTOCOL` | `grpc` | Java-only: `http/protobuf` switches to OTLP over HTTP (the tests use it) |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | `localhost:4317` | the Collector, OTLP over gRPC, plain text (a `http://` prefix is optional) |
 
 Durations use Go's spelling (`90s`, `1m30s`, `10ms`), as before.
 
@@ -79,8 +78,15 @@ default `duration` spans at least four of the Collector's
 `otel-collector-config.yaml`, so that file must exist at
 `../session-1-fundamentals/collector/`).
 
-`SeedCostSamplingServiceDeliveryTest` runs the real seeder against a fake OTLP
-receiver (a JDK `HttpServer`) and checks every span arrives, each trace has a
-root and a matching `db.query` child, the attribute keys are right, errored
-traces carry error status on both spans, and emission is paced over
-`SEED_DURATION`.
+`SeedCostSamplingServiceDeliveryTest` starts the real seeder in a separate JVM,
+like Go's `go run .` (`build.gradle` passes its classpath in as the
+`seeder.classpath` system property), against a fake Collector that is a real
+OTLP/gRPC server (grpc-netty-shaded, test-only). It checks every span arrives,
+each trace has a root and a matching `db.query` child, the attribute keys are
+right, errored traces carry error status on both spans, emission is paced over
+`SEED_DURATION`, and the seeder exits non-zero when exports fail.
+
+The test catches dropped spans: it seeds 12,000 requests (24,000 spans, well
+past the 8,192-span queue plus the one 1,024-span batch the worker takes off it)
+against a receiver that sleeps 100 ms per export. Removing the seeder's chunked
+flush makes it fail.
